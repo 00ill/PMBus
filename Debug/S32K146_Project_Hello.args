@@ -1,0 +1,14 @@
+-T
+"D:/Workspace/S32DS20231129/S32K146_Project_Hello/Project_Settings/Linker_Files/S32K1xx_flash.ld"
+-Wl,-Map,"S32K146_Project_Hello.map"
+-Xlinker
+--gc-sections
+-n
+-mcpu=cortex-m4
+-mthumb
+-specs=ewl_c9x_noio.specs
+--sysroot="C:/NXP/S32DS_ARM_v2.2/S32DS/build_tools/gcc_v4.9/arm_ewl2"
+"./Project_Settings/Startup_Code/startup.o"
+"./Project_Settings/Startup_Code/startup_S32K146.o"
+"./Project_Settings/Startup_Code/system_S32K146.o"
+"./src/main.o"
