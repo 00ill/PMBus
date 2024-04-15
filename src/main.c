@@ -89,28 +89,53 @@
 #define GPIO_PDDR_PDD(x) (((unsigned int)(((unsigned int)(x)) << GPIO_PDDR_PDD_SHIFT)) & GPIO_PDDR_PDD_MASK)
 #endif
 
+
+#define OPERATION 0x01
+#define CLEAR_FAULTS 0x03
+#define STORE_USER_CODE 0x17
+#define CAPABILITY 0x19
+#define VOUT_MODE 0x20
+#define VOUT_COMMAND 0x21
+#define VOUT_TRANSITION_RATE 0x27
+#define IOUT_OC_FAULT_LIMIT 0x46
+#define STATUS_BYTE 0x78
+#define STATUS_WORD 0x79
+#define READ_VIN 0x88
+#define READ_VOUT 0x8B
+#define READ_IOUT 0x8C
+#define READ_TEMPERATURE 0x8D
+#define MFR_ID 0x99
+#define MFR_VOUT_MIN 0xA4
+#define MFR_VOUT_MAX 0xA5
+#define MFR_STATUS_FAULTS 0xF0
+
+typedef enum FAULT
+{
+	FAULT_CLEAR,
+	TEMPERATURE_FAULTS_OR_WARNING,
+	PMBUS_COMMUNICATION_EVENT
+} fault;
+
 unsigned char dataByteLow = 0;
 unsigned char dataByteLow_Bin[8];
 unsigned char dataByteHigh = 0;
 unsigned char dataByteHigh_Bin[8];
-unsigned char Command = 0x19;
+unsigned char singleByteData = 0;
+unsigned char faultDataHigh = 0;
+unsigned char faultDataLow = 0;
+fault FAULT_STATE = 0;
+
 
 float Temperature = 0;
 float Vin = 0;
 float Vout = 0;
 float Iout = 0;
-float TempData = 0;
 float power = 0;
 
 int p = 0;
 int p_fre = 3000;
 unsigned char ChildAddress = 0x27;
 
-float check11 = 0;
-unsigned char checkH = 0xE9;
-unsigned char CheckL = 0x85;
-
-int ack_check[3] = {0};
 int d;
 int WaitingTime = INT32_MAX;
 
@@ -135,44 +160,53 @@ void Dec2Bin_8bit(unsigned char dec_value, unsigned char *binArrp)
 }
 void L112DEC(unsigned char HighByte, unsigned char LowByte, float *Save_p)
 {
-	unsigned char sign = ((HighByte & 0x80) == 0x80); //맨 처음 비트로 지수 부분 부호 결정
-	unsigned char exponent = (HighByte >> 3); // HighByte의 뒷 3자리 제거
-	exponent = ~exponent; //반전
-	exponent = (exponent & 0x1F); //맨 뒤 5자리만 남기고 제거
-	exponent = exponent + 1; // +1
+	unsigned char sign = ((HighByte & 0x80) == 0x80);
+	unsigned char exponent = (HighByte >> 3);
+	exponent = ~exponent;
+	exponent = (exponent & 0x1F);
+	exponent = exponent + 1;
 
-	unsigned int mantissa = ((HighByte & 0x07) << 8); //highbyte의 뒷 3자리만 저장
-	mantissa = mantissa | LowByte; // LowData와 합침
-
+	unsigned int mantissa = ((HighByte & 0x07) << 8);
+	mantissa = mantissa | LowByte;
 	float exponent_Result = 1;
 	unsigned char i;
-	// 부호에 따라 계산 2^N 계산 부분
-	if (sign == 0)
+
+	if (((HighByte >> 3) & 0x1F) != 0x00)
 	{
-		for (i = 0; i < exponent; i++)
+		if (sign == 0)
 		{
-			exponent_Result *= 2;
+			for (i = 0; i < exponent; i++)
+			{
+				exponent_Result *= 2;
+			}
+		}
+		else
+		{
+			for (i = 0; i < exponent; i++)
+			{
+				exponent_Result *= 0.5;
+			}
 		}
 	}
-	else
-	{
-		for (i = 0; i < exponent; i++)
-		{
-			exponent_Result *= 0.5;
-		}
-	}
-	*Save_p = exponent_Result * mantissa; // 2^N * Y
+
+	*Save_p = exponent_Result * mantissa;
 }
 
 void UL162DEC(unsigned char HighByte, unsigned char LowByte, float *Save_p)
 {
 	unsigned int mantissa = HighByte;
-	mantissa = mantissa <<8;
+	mantissa = mantissa << 8;
 	mantissa = mantissa | LowByte;
-	
+
 	*Save_p = 0.001953125 * mantissa;
 }
 
+void DEC2UL16(float Dec, unsigned char* HighByte_p, unsigned char* LowByte_p)
+{
+	int temp_Dec = (int)(Dec / 0.001953125);
+	*HighByte_p = ((temp_Dec >> 8) & 0xFF);
+	*LowByte_p = (temp_Dec & 0xFF);
+}
 #if (EVB)
 void SCLSetDirectionFunc(unsigned char dir)
 {
@@ -210,7 +244,15 @@ void SDASetDirectionFunc(unsigned char dir)
 void Delay(void)
 {
 	int i;
-	for (i = 0; i < 20; i++)
+	for (i = 0; i < 30; i++)
+	{
+	}
+}
+
+void TermI2C(void)
+{
+	unsigned int i;
+	for (i = 0; i < 100; i++)
 	{
 	}
 }
@@ -234,32 +276,19 @@ void StopI2C(void)
 	SDAHigh;
 }
 
-void StopI2C_YYS(void)
-{
-	SDAOutput;
-	SCLHigh;
-	Delay();
-	SDALow;
-	Delay();
-	SDALow;
-	Delay();
-	SDAHigh;
-	Delay();
-}
-
 void WaitForAck(void)
 {
-	for (d = 0; d < WaitingTime; d++)
-	{
-		if (SDARead == 0)
-		{
-			WaitingTime = 0;
-		}
-	}
-	WaitingTime = INT32_MAX;
+	// for (d = 0; d < WaitingTime; d++)
+	// {
+	// 	if (SDARead == 0)
+	// 	{
+	// 		WaitingTime = 0;
+	// 	}
+	// }
+	// WaitingTime = INT32_MAX;
 }
 
-void I2C_Write_SDC(unsigned char pre_byte, unsigned char delay, unsigned char checkNum)
+void I2C_Write_SDC(unsigned char pre_byte, unsigned char delay)
 {
 	int i, temp;
 	int j;
@@ -298,7 +327,6 @@ void I2C_Write_SDC(unsigned char pre_byte, unsigned char delay, unsigned char ch
 	Delay();
 	Delay();
 	Delay();
-	ack_check[checkNum] = SDARead;
 	SCLLow;
 	Delay();
 	SDAOutput;
@@ -339,6 +367,7 @@ unsigned char I2C_Read_SDC(unsigned char nack)
 	{
 		SDALow;
 	}
+	Delay();
 	SCLHigh;
 	Delay();
 	Delay();
@@ -349,32 +378,77 @@ unsigned char I2C_Read_SDC(unsigned char nack)
 	return data;
 }
 
-void ReadWord(unsigned char command)
+void ReadByte(unsigned char Command)
 {
 	StartI2C_YYS();
-	I2C_Write_SDC(ChildAddress << 1, 4, 0);
-	I2C_Write_SDC(command, 1, 1);
+	I2C_Write_SDC(ChildAddress << 1, 4);
+	I2C_Write_SDC(Command, 1);
 	Delay();
 	Delay();
 	StartI2C_YYS();
-	I2C_Write_SDC((ChildAddress << 1) + 1, 3, 2);
+	I2C_Write_SDC((ChildAddress << 1) + 1, 3);
+	singleByteData = I2C_Read_SDC(true);
+	Delay();
+	StopI2C();
+	TermI2C();
+}
+
+void WriteByte(unsigned char Command, unsigned char Data)
+{
+	StartI2C_YYS();
+	I2C_Write_SDC(ChildAddress << 1, 4);
+	I2C_Write_SDC(Command, 1);
+	Delay();
+	Delay();
+	I2C_Write_SDC(Data, 1);
+	Delay();
+	StopI2C();
+	TermI2C();
+}
+
+void ReadWord(unsigned char Command)
+{
+	StartI2C_YYS();
+	I2C_Write_SDC(ChildAddress << 1, 4);
+	I2C_Write_SDC(Command, 1);
+	Delay();
+	Delay();
+	StartI2C_YYS();
+	I2C_Write_SDC((ChildAddress << 1) + 1, 3);
 	dataByteLow = I2C_Read_SDC(false);
 	dataByteHigh = I2C_Read_SDC(true);
 	Delay();
 	StopI2C();
+	TermI2C();
 }
+
+void WriteWord(unsigned char command, unsigned char DataByteLow, unsigned DataByteHigh)
+{
+	StartI2C_YYS();
+	I2C_Write_SDC(ChildAddress << 1, 4);
+	I2C_Write_SDC(command, 1);
+	Delay();
+	Delay();
+	I2C_Write_SDC(DataByteLow, 1);
+	I2C_Write_SDC(DataByteHigh, 1);
+	Delay();
+	StopI2C();
+	TermI2C();
+}
+
 unsigned char BlockReadData[5] = {0};
+
 void BlockRead(unsigned char command)
 {
 	unsigned char b = 0;
 	StartI2C_YYS();
-	I2C_Write_SDC(ChildAddress << 1, 4, 0);
-	I2C_Write_SDC(command, 1, 1);
+	I2C_Write_SDC(ChildAddress << 1, 4);
+	I2C_Write_SDC(command, 1);
 	Delay();
 	Delay();
 	StartI2C_YYS();
-	I2C_Write_SDC((ChildAddress << 1) + 1, 3, 2);
-	for(b = 0 ; b < 4; b++)
+	I2C_Write_SDC((ChildAddress << 1) + 1, 3);
+	for (b = 0; b < 4; b++)
 	{
 		BlockReadData[b] = I2C_Read_SDC(false);
 	}
@@ -382,38 +456,62 @@ void BlockRead(unsigned char command)
 	Delay();
 	StopI2C();
 }
+
 void ReadVin(void)
-{	
-	ReadWord(0x88);
+{
+	ReadWord(READ_VIN);
 	L112DEC(dataByteHigh, dataByteLow, &Vin);
-	dataByteHigh = 0;
-	dataByteLow = 0;
+	TermI2C();
 }
 
 void ReadVout(void)
 {
-	ReadWord(0x8B);
+	ReadWord(READ_VOUT);
 	UL162DEC(dataByteHigh, dataByteLow, &Vout);
-	dataByteHigh = 0;
-	dataByteLow = 0;
+	TermI2C();
 }
 
 void ReadIout(void)
 {
-	ReadWord(0x8C);
+	ReadWord(READ_IOUT);
 	L112DEC(dataByteHigh, dataByteLow, &Iout);
-	//UL162DEC(dataByteHigh, dataByteLow, &Iout);
-			Dec2Bin_8bit(dataByteLow, &dataByteLow_Bin);
-			Dec2Bin_8bit(dataByteHigh, &dataByteHigh_Bin);
+	Dec2Bin_8bit(dataByteLow, &dataByteLow_Bin);
+	Dec2Bin_8bit(dataByteHigh, &dataByteHigh_Bin);
+	TermI2C();
 }
 
 void ReadTemp(void)
 {
-	ReadWord(0x8D);
-	//L112DEC(dataByteHigh, dataByteLow, &Temperature);
-	UL162DEC(dataByteHigh, dataByteLow, &Temperature);
-	dataByteHigh = 0;
-	dataByteLow = 0;
+	ReadWord(READ_TEMPERATURE);
+	L112DEC(dataByteHigh, dataByteLow, &Temperature);
+	TermI2C();
+}
+
+void SetVout(float DesiredV)
+{
+	unsigned char dataByteHigh;
+	unsigned char dataByteLow;
+	DEC2UL16(DesiredV, &dataByteHigh, &dataByteLow);
+	WriteWord(VOUT_COMMAND, dataByteLow, dataByteHigh);
+}
+
+void FaultCheck(void)
+{
+	ReadWord(STATUS_WORD);
+	faultDataHigh = dataByteHigh;
+	faultDataLow = dataByteLow;
+	if((faultDataLow & 0x04) == 0x04)
+	{
+		FAULT_STATE = TEMPERATURE_FAULTS_OR_WARNING;
+	}
+	else if((faultDataLow & 0x02) == 0x02)
+	{
+		FAULT_STATE = PMBUS_COMMUNICATION_EVENT;
+	}
+	else
+	{
+		FAULT_STATE = FAULT_CLEAR;
+	}
 }
 
 int main(void)
@@ -446,45 +544,13 @@ int main(void)
 		{
 			p++;
 		}
-		if (p > 3000)
+		if (p > p_fre)
 		{
-			//BlockRead(0x30);
-			ReadWord(0x88);
-			UL162DEC(dataByteHigh, dataByteLow, &Temperature);
-			Dec2Bin_8bit(dataByteLow, &dataByteLow_Bin);
-			Dec2Bin_8bit(dataByteHigh, &dataByteHigh_Bin);
 			ReadVin();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
 			ReadVout();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
 			ReadIout();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
 			ReadTemp();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
-			Delay();
+			FaultCheck();
 			power = Iout * Vout;
 			p = 0;
 		}
