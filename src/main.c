@@ -89,7 +89,6 @@
 #define GPIO_PDDR_PDD(x) (((unsigned int)(((unsigned int)(x)) << GPIO_PDDR_PDD_SHIFT)) & GPIO_PDDR_PDD_MASK)
 #endif
 
-
 #define OPERATION 0x01
 #define CLEAR_FAULTS 0x03
 #define STORE_USER_CODE 0x17
@@ -111,7 +110,7 @@
 
 typedef enum FAULT
 {
-	FAULT_CLEAR,
+	FAULT_NOTHING,
 	TEMPERATURE_FAULTS_OR_WARNING,
 	PMBUS_COMMUNICATION_EVENT
 } fault;
@@ -123,8 +122,10 @@ unsigned char dataByteHigh_Bin[8];
 unsigned char singleByteData = 0;
 unsigned char faultDataHigh = 0;
 unsigned char faultDataLow = 0;
-fault FAULT_STATE = 0;
+fault FAULT_STATE = FAULT_NOTHING;
 
+float SettingV = 13;
+float SettingV_old = 13;
 
 float Temperature = 0;
 float Vin = 0;
@@ -158,55 +159,64 @@ void Dec2Bin_8bit(unsigned char dec_value, unsigned char *binArrp)
 		temp_dec = temp_dec << 1;
 	}
 }
+
 void L112DEC(unsigned char HighByte, unsigned char LowByte, float *Save_p)
 {
-	unsigned char sign = ((HighByte & 0x80) == 0x80);
-	unsigned char exponent = (HighByte >> 3);
-	exponent = ~exponent;
-	exponent = (exponent & 0x1F);
-	exponent = exponent + 1;
-
-	unsigned int mantissa = ((HighByte & 0x07) << 8);
-	mantissa = mantissa | LowByte;
-	float exponent_Result = 1;
-	unsigned char i;
-
-	if (((HighByte >> 3) & 0x1F) != 0x00)
+	if (LowByte != 0xFF)
 	{
-		if (sign == 0)
+		unsigned char sign = ((HighByte & 0x80) == 0x80);
+		unsigned char exponent = (HighByte >> 3);
+		exponent = ~exponent;
+		exponent = (exponent & 0x1F);
+		exponent = exponent + 1;
+
+		unsigned int mantissa = ((HighByte & 0x07) << 8);
+		mantissa = mantissa | LowByte;
+		float exponent_Result = 1;
+		unsigned char i;
+
+		if (((HighByte >> 3) & 0x1F) != 0x00)
 		{
-			for (i = 0; i < exponent; i++)
+			if (sign == 0)
 			{
-				exponent_Result *= 2;
+				for (i = 0; i < exponent; i++)
+				{
+					exponent_Result *= 2;
+				}
+			}
+			else
+			{
+				for (i = 0; i < exponent; i++)
+				{
+					exponent_Result *= 0.5;
+				}
 			}
 		}
-		else
+		if ((exponent_Result * mantissa) < 900)
 		{
-			for (i = 0; i < exponent; i++)
-			{
-				exponent_Result *= 0.5;
-			}
+			*Save_p = exponent_Result * mantissa;
 		}
 	}
-
-	*Save_p = exponent_Result * mantissa;
 }
 
 void UL162DEC(unsigned char HighByte, unsigned char LowByte, float *Save_p)
 {
-	unsigned int mantissa = HighByte;
-	mantissa = mantissa << 8;
-	mantissa = mantissa | LowByte;
+		unsigned int mantissa = HighByte;
+		mantissa = mantissa << 8;
+		mantissa = mantissa | LowByte;
 
-	*Save_p = 0.001953125 * mantissa;
+		*Save_p = 0.001953125 * mantissa;
 }
 
-void DEC2UL16(float Dec, unsigned char* HighByte_p, unsigned char* LowByte_p)
+void DEC2UL16(float Dec, unsigned char *HighByte_p, unsigned char *LowByte_p)
 {
 	int temp_Dec = (int)(Dec / 0.001953125);
-	*HighByte_p = ((temp_Dec >> 8) & 0xFF);
+	// *HighByte_p = ((temp_Dec >> 8) & 0xFF);
+	*HighByte_p = (temp_Dec & 0xFF00);
+	// *LowByte_p = (temp_Dec & 0xFF);
 	*LowByte_p = (temp_Dec & 0xFF);
 }
+
 #if (EVB)
 void SCLSetDirectionFunc(unsigned char dir)
 {
@@ -319,7 +329,7 @@ void I2C_Write_SDC(unsigned char pre_byte, unsigned char delay)
 		SCLLow;
 	}
 	Delay();
-	SDALow;
+	// SDALow;
 	SDAHigh;
 	SDAInput;
 	WaitForAck();
@@ -500,20 +510,30 @@ void FaultCheck(void)
 	ReadWord(STATUS_WORD);
 	faultDataHigh = dataByteHigh;
 	faultDataLow = dataByteLow;
-	if((faultDataLow & 0x04) == 0x04)
+	if (faultDataLow != 0xFF)
 	{
-		FAULT_STATE = TEMPERATURE_FAULTS_OR_WARNING;
-	}
-	else if((faultDataLow & 0x02) == 0x02)
-	{
-		FAULT_STATE = PMBUS_COMMUNICATION_EVENT;
-	}
-	else
-	{
-		FAULT_STATE = FAULT_CLEAR;
+		if ((faultDataLow & 0x04) == 0x04)
+		{
+			FAULT_STATE = TEMPERATURE_FAULTS_OR_WARNING;
+		}
+		else if ((faultDataLow & 0x02) == 0x02)
+		{
+			FAULT_STATE = PMBUS_COMMUNICATION_EVENT;
+		}
+		else
+		{
+			FAULT_STATE = FAULT_NOTHING;			
+		}
 	}
 }
 
+int origin = 13;
+unsigned char high = 0;
+unsigned char low = 0;
+int result = 0;
+float temp = 0;
+
+unsigned char TempCheck = 0;
 int main(void)
 {
 	WDOG_disable();
@@ -546,12 +566,26 @@ int main(void)
 		}
 		if (p > p_fre)
 		{
+			// DEC2UL16(origin, &high, &low);
+			// UL162DEC(high, low, &result);
+
+			ReadWord(IOUT_OC_FAULT_LIMIT);
+			L112DEC(dataByteHigh, dataByteLow, &temp);
+			high = dataByteHigh;
+			low = dataByteLow;
+			TermI2C();
 			ReadVin();
 			ReadVout();
 			ReadIout();
 			ReadTemp();
 			FaultCheck();
 			power = Iout * Vout;
+			// SetVout(SettingV);
+
+			if(Temperature >= 125)
+			{
+				TempCheck = 1;
+			}
 			p = 0;
 		}
 	}
