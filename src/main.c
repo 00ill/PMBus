@@ -124,8 +124,10 @@ unsigned char faultDataHigh = 0;
 unsigned char faultDataLow = 0;
 fault FAULT_STATE = FAULT_NOTHING;
 
-float SettingV = 13;
-float SettingV_old = 13;
+float SettingV = 14;
+float SettingV_old = 14;
+unsigned char transhigh = 0;
+unsigned char translow = 0;
 
 float Temperature = 0;
 float Vin = 0;
@@ -136,9 +138,6 @@ float power = 0;
 int p = 0;
 int p_fre = 3000;
 unsigned char ChildAddress = 0x27;
-
-int d;
-int WaitingTime = INT32_MAX;
 
 void WDOG_disable(void)
 {
@@ -210,10 +209,8 @@ void UL162DEC(unsigned char HighByte, unsigned char LowByte, float *Save_p)
 
 void DEC2UL16(float Dec, unsigned char *HighByte_p, unsigned char *LowByte_p)
 {
-	int temp_Dec = (int)(Dec / 0.001953125);
-	// *HighByte_p = ((temp_Dec >> 8) & 0xFF);
-	*HighByte_p = (temp_Dec & 0xFF00);
-	// *LowByte_p = (temp_Dec & 0xFF);
+	unsigned int temp_Dec = (unsigned int)(Dec / 0.001953125);
+	*HighByte_p = ((temp_Dec & 0xFF00) >> 8);
 	*LowByte_p = (temp_Dec & 0xFF);
 }
 
@@ -288,14 +285,14 @@ void StopI2C(void)
 
 void WaitForAck(void)
 {
-	// for (d = 0; d < WaitingTime; d++)
-	// {
-	// 	if (SDARead == 0)
-	// 	{
-	// 		WaitingTime = 0;
-	// 	}
-	// }
-	// WaitingTime = INT32_MAX;
+	int d;
+	for (d = 0; d < INT32_MAX; d++)
+	{
+		if (SDARead == 0)
+		{
+			d = INT32_MAX;
+		}
+	}
 }
 
 void I2C_Write_SDC(unsigned char pre_byte, unsigned char delay)
@@ -527,13 +524,7 @@ void FaultCheck(void)
 	}
 }
 
-int origin = 13;
-unsigned char high = 0;
-unsigned char low = 0;
-int result = 0;
-float temp = 0;
 
-unsigned char TempCheck = 0;
 int main(void)
 {
 	WDOG_disable();
@@ -566,25 +557,19 @@ int main(void)
 		}
 		if (p > p_fre)
 		{
-			// DEC2UL16(origin, &high, &low);
-			// UL162DEC(high, low, &result);
-
-			ReadWord(IOUT_OC_FAULT_LIMIT);
-			L112DEC(dataByteHigh, dataByteLow, &temp);
-			high = dataByteHigh;
-			low = dataByteLow;
 			TermI2C();
 			ReadVin();
 			ReadVout();
 			ReadIout();
 			ReadTemp();
 			FaultCheck();
-			power = Iout * Vout;
-			// SetVout(SettingV);
 
-			if(Temperature >= 125)
+			power = Iout * Vout;
+
+			if(SettingV != SettingV_old)
 			{
-				TempCheck = 1;
+				SetVout(SettingV);
+				SettingV_old = SettingV;
 			}
 			p = 0;
 		}
